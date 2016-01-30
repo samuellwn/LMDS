@@ -1,0 +1,43 @@
+#!/usr/bin/python3
+
+import os
+import sys
+sys.path.insert(0, '/usr/share/lmds')
+import lmds
+
+def main():
+    # register signal handlers
+    signal(SIGINT, exitHandler)
+    signal(SIGQUIT, exitHandler)
+    signal(SIGTERM, exitHandler)
+
+    # add locations for plug-ins to the module search path
+    sys.path.insert(0, '/usr/share/lmds/plugins')
+    sys.path.insert(0, '/usr/local/share/lmds/plugins')
+    sys.path.insert(0, os.getenv('HOME') + '/.lmds/plugins')
+
+    # load config
+    localConfig = os.getenv('HOME') + '/.lmds/lmds.conf'
+    globalConfig = '/etc/lmds.conf'
+    if Path(localConfig).is_file():
+        with open(localConfig) as f:
+            exec(compile(f.read(), localConfig, 'exec'))
+    elif Path(globalConfig).is_file():
+        with open(globalConfig) as f:
+            exec(compile(f.read(), globalConfig, 'exec'))
+    else:
+        print("Error: cannot find config file")
+        exit(1)
+
+    while(not done.is_set()): # loop until told to exit
+        try:
+            processMessage(messages.get(True, 1))
+            messages.task_done()
+        except Empty:
+            pass
+
+    for f in exitFunctions:
+        f()
+    
+if __name__ == "__main__":
+    main()
