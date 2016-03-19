@@ -3,7 +3,10 @@
 import os
 import sys
 sys.path.insert(0, '/usr/share/lmds')
-import lmds
+# Don't use this anywhere else. We make an exception
+# because module lmds is the core of this software.
+from lmds import *
+from signal import signal, SIGINT, SIGQUIT, SIGTERM
 
 def main():
     # register signal handlers
@@ -29,15 +32,18 @@ def main():
         print("Error: cannot find config file")
         exit(1)
 
-    while(not done.is_set()): # loop until told to exit
-        try:
-            processMessage(messages.get(True, 1))
-            messages.task_done()
-        except Empty:
-            pass
+    while(True):
+        event.wait()
+        if event.is_set(events.newMessage):
+            for input in inputs:
+                input.processMessages(5)
+        if event.is_set(events.done):
+            break
 
     for f in exitFunctions:
         f()
+
+    
     
 if __name__ == "__main__":
     main()
