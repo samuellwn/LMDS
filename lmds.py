@@ -2,10 +2,10 @@
 # Main API for LMDS.
 
 from pathlib import Path
-from multiprocessing import Event, Queue, Process, Lock, Pool
+import multiprocessing as mp
 from queue import Empty, Full
 from enum import Enum
-from signam import signal, SIGINT, SIGQUIT, SIGTERM, SIG_DFL
+from signal import signal, alarm, SIGINT, SIGQUIT, SIGTERM, SIGALRM, SIG_DFL
 
 ## Global pool of worker processes
 #
@@ -13,16 +13,14 @@ from signam import signal, SIGINT, SIGQUIT, SIGTERM, SIG_DFL
 #  use. This variable is an instance of [multiprocessing.Pool].
 #
 #  [multiprocessing.Pool]: https://docs.python.org/3.5/library/multiprocessing.html#multiprocessing.pool.Pool
-workers = Pool()
-
-# helper functions
+workers = mp.Pool()
 
 ## Run a function asynchronously
 #
 #  Arguments:
-#  - \c func The function to run asynchronously.
-#  - \c args The positional arguments to pass to the function. (Optional)
-#  - \c kwargs The keyword arguments to pass to the function. (Optional)
+#  - `func` The function to run asynchronously.
+#  - `args=None<[]>` The positional arguments to pass to the function.
+#  - `kwargs=None<{}>` The keyword arguments to pass to the function.
 #
 #  Returns an instance of [multiprocessing.pool.AsyncResult] that can be used to
 #  get the return value of when the function is done.
@@ -33,57 +31,123 @@ def runAsync(func, args=None, kwargs=None):
     if kwargs == None: kwargs = {}
     return workers.apply_async(func, args, kwargs)
 
+# Internal.
+#
+# An enum. Contains the flags for the event loop.
 class Events(Enum):
-    done = 1
-    newMessage = 2
-    tick = 3
+    done = 1       # We have have been asked to shut down.
+    newMessage = 2 # There is at least one message to process.
+    tick = 3       # Server tick event.
 
+# Handler for SIGINT, SIGQUIT, SIGTERM
 def exitHandler(_, _):
     loop.set(events.done)
 
-# Enhanced version of Event with support for multiple types of
-# events.
-class LMDSEvent(Event):
-    # flags is an enumeration of the available flags of events
-    def __init__(self):
-        Event.__init__()
-        self.flags = flags
+# Handler for SIGALRM tick
+def tickHandler(_, _):
+    loop.set(events.tick)
+    alarm(0.002)
 
+## Enhanced version of [multiprocessing.Event] with support for multiple types
+#  of events.
+#
+#  This class is thread and process safe.
+#  
+#  Call `set(flag)` to set the specified flag, where `flag` can be any value.
+#
+#  Call `is_set([flag])` to check if the specified flag is set. If flag is not
+#  specified, then `is_set` checks if any flag is set.
+#
+#  Call `clear([flag])` to clear the specified flag. If flag is not specified,
+#  then `clear` clears all flags.
+#
+#  Call `wait([flag])` to block until the specified flag is set. If flag is not
+#  specified then `wait` blocks until any flag is set. `wait` does NOT return
+#  the flag that was set, neither does it support a timeout value.
+class Event(mp.Event):
+    ## Construct a new instance of `Event`.
+    #  
+    # This constructor accepts no arguments.
+    def __init__(self):
+        Event.__init__(self)
+        self.flags = []
+
+    ## Check if a flag is currently set.
+    #
+    #  Arguments:
+    #  - `flag=None` The flag to check.
+    #
+    #  This function returns `True` if the specified flag is set, otherwise
+    #  `False`. If flag is not specified, the function returns `True` if
+    #  any flag is set, otherwise `False`.
     def is_set(self, flag=None):
         if flag == None:
             return Event.is_set()
         else:
             return flag in flags
-
+    
+    ## Set the specified flag.
+    #
+    #  Arguments:
+    #  - `flag` The flag to set. Can be any value.
     def set(self, flag):
-        Event.set()
+        mp.Event.set()
         if not flag in flags:
-            setFlags.append(flag)
+            flags.append(flag)
 
+    ## Clear the specified flag.
+    #
+    # Arguments:
+    # - `flag=None` The flag to clear.
+    #
+    # Clears the specified flag. If `flag` is unspecified, the function will
+    # clear all flags.
     def clear(self, flag=None):
         if flag == None:
-            Event.clear()
+            mp.Event.clear()
             flags.clear()
         else:
             if flag in flags:
                 flags.remove(flag)
             if len(flags) == 0:
-                Event.clear()
-
+                mp.Event.clear()
+    
+    ## Wait for specified flag to be set.
+    #
+    #  Arguments:
+    #  - `flag=None` The flag to wait for.
+    #
+    #  This function blocks until the specified flag is set. If no flag is
+    #  specified, it waits until any flag is set. Unlike
+    #  [multiprocessing.Event], it provides no timeout argument. This function
+    #  always returns `None`.
+    #
+    #  [multiprocessing.Event]: http://docs.python.org/3/library/multiprocessing.html#multiprocessing.Event
     def wait(self, flag=None):
         while(True):
-            Event.wait()
+            mp.Event.wait()
             if flag == None:
-                return True
+                return
             if flag in flags:
-                return True
+                return
         
-# Lock wrapper. Used to aid in migrating to read-write
-# locks later.
-class LMDSLock:
+## Lock wrapper.
+# 
+# Used to aid in migrating to read-write locks later. Duplicates the
+# [multiprocessing.Lock] API.
+#
+# [multiprocessing.Lock]: http://docs.python.org/3/library/multiprocessing.html#multiprocessing.Lock
+class Lock:
+    ## Construct a new instance of `Lock`.
+    #
+    #  Construct a new instance of `Lock`. This constructor accepts no arguments.
     def __init__(self):
-        self.lock = Lock()
+        self.lock = mp.Lock()
 
+    ## Acquire the lock.
+    #
+    #  Arguments:
+    #  - `blocking=True` 
     def acquire(self, blocking=True, timeout=-1):
         self.lock.acquire(blocking, timeout)
 
@@ -92,7 +156,7 @@ class LMDSLock:
 
 # Enhanced version of the list class with internal lock
 # and some thread-safe asyncronous functions
-class LMDSList(list, LMDSLock): # TODO use RWLock
+class LMDSList(list, Lock): # TODO use RWLock
     def _appendSafe(self, item):
         self.acquire()
         self.append(item)
@@ -169,7 +233,7 @@ class EventHandlerList:
 
 # Improved version of the dict class with internal lock
 # and some thread-safe asyncronous functions
-class LMDSDict(dict, LMDSLock): # TODO use RWLock
+class LMDSDict(dict, Lock): # TODO use RWLock
     def _add(self, key, value):
         self.acquire()
         self[key] = value
@@ -186,7 +250,7 @@ class LMDSDict(dict, LMDSLock): # TODO use RWLock
     def removeAsync(self, key):
         runAsync(self._remove, self, key)
 
-loop = LMDSEvent()
+loop = Event()
 inputs = LMDSList()
 modules = LMDSDict()
 exitFunctions = []
